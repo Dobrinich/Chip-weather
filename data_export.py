@@ -435,25 +435,47 @@ def build_driest_years(limit=10):
             "driest_years": rows}
 
 def build_day_in_history(md=None):
-    """How does a given calendar day (MM-DD) compare across all years? Defaults to today."""
+    """How does a given calendar day (MM-DD) compare across the FULL record?
+    Temps: deep history from area_temp_stations (1893-present, area-average), with
+    a fallback to the station's own weather_daily (2004-present) if needed.
+    Rain: area_rain_daily (1893-present). Plus the most recent actual reading."""
     if not md:
         md = datetime.utcnow().strftime("%m-%d")
     like = "%-" + md
-    temps = _q1("weather",
-        'SELECT ROUND(AVG(tmax_f),1) AS avg_high, ROUND(AVG(tmin_f),1) AS avg_low, '
-        'MAX(tmax_f) AS record_high, MIN(tmin_f) AS record_low, COUNT(*) AS days '
-        'FROM weather_daily WHERE date LIKE ?', (like,))
+
+    # deep temperature history (1893-present) from the area-average station table
+    deep = _q1("weather",
+        'SELECT ROUND(AVG(avg_tmax_f),1) AS avg_high, ROUND(AVG(avg_tmin_f),1) AS avg_low, '
+        'MAX(avg_tmax_f) AS record_high, MIN(avg_tmin_f) AS record_low, '
+        'COUNT(*) AS years, MIN(date) AS since '
+        'FROM area_temp_stations WHERE date LIKE ?', (like,))
+    deep_ok = isinstance(deep, list) and len(deep) > 0
+    temps = deep[0] if deep_ok else None
+    temp_source = "area_temp_stations (1893-present, area average)"
+    if not temps or temps.get("years") in (None, 0):
+        # fallback to the station's own record if the deep table is unavailable
+        st = _q1("weather",
+            'SELECT ROUND(AVG(tmax_f),1) AS avg_high, ROUND(AVG(tmin_f),1) AS avg_low, '
+            'MAX(tmax_f) AS record_high, MIN(tmin_f) AS record_low, COUNT(*) AS years '
+            'FROM weather_daily WHERE date LIKE ?', (like,))
+        temps = (st or [None])[0]
+        temp_source = "weather_daily (2004-present, station)"
+
     rain = _q1("weather",
-        'SELECT ROUND(AVG("%s"),2) AS avg_rain, MAX("%s") AS record_rain '
+        'SELECT ROUND(AVG("%s"),2) AS avg_rain, MAX("%s") AS record_rain, COUNT(*) AS years '
         'FROM "%s" WHERE date LIKE ?' % (RAIN_COL, RAIN_COL, RAIN_TABLE), (like,))
+
     today = _q1("weather",
         'SELECT date, tmax_f, tmin_f, precip_in FROM weather_daily WHERE date LIKE ? '
         'ORDER BY date DESC LIMIT 1', (like,))
+
     out = {"generated_utc": datetime.utcnow().isoformat() + "Z",
            "calendar_day": md,
-           "normals_and_records": (temps or [None])[0],
+           "temp_source": temp_source,
+           "temp_normals_and_records": temps,
+           "rain_source": RAIN_TABLE + " (1893-present)",
            "rain_normals": (rain or [None])[0],
-           "most_recent_year_on_this_day": (today or [None])[0]}
+           "most_recent_actual_reading": (today or [None])[0]}
     return out
 
 # ---------- manifest / status ----------
