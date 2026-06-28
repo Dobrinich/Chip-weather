@@ -383,6 +383,79 @@ def run_query(db, sql):
         out["note"] = "result truncated at %d rows; add LIMIT or aggregate" % QUERY_ROW_CAP
     return out
 
+# ---------- named question endpoints (pre-built, listed in manifest) ----------
+# Each computes on the Pi and returns a clean answer, so ChatGPT can hit a fixed
+# URL instead of constructing SQL (its browser blocks self-built query URLs).
+
+def _q1(db, sql, params=()):
+    """Run an internal trusted SELECT, return list of dict rows (no caps/guards needed)."""
+    if db not in DATABASES or not os.path.exists(DATABASES[db]):
+        return None
+    try:
+        con = ro_connect(DATABASES[db])
+        cur = con.execute(sql, params)
+        cols = [d[0] for d in cur.description]
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        con.close()
+        return rows
+    except Exception as e:
+        return {"error": str(e)}
+
+def build_records():
+    """Headline records across the full record."""
+    out = {"generated_utc": datetime.utcnow().isoformat() + "Z", "source": "weather"}
+    wettest_day = _q1("weather",
+        'SELECT "%s" AS date, "%s" AS rain_in FROM "%s" WHERE "%s" IS NOT NULL '
+        'ORDER BY "%s" DESC LIMIT 1' % (RAIN_DATE, RAIN_COL, RAIN_TABLE, RAIN_COL, RAIN_COL))
+    hottest = _q1("weather",
+        'SELECT date, tmax_f FROM weather_daily WHERE tmax_f IS NOT NULL ORDER BY tmax_f DESC LIMIT 1')
+    coldest = _q1("weather",
+        'SELECT date, tmin_f FROM weather_daily WHERE tmin_f IS NOT NULL ORDER BY tmin_f ASC LIMIT 1')
+    out["wettest_day_ever"] = (wettest_day or [None])[0]
+    out["hottest_day_ever"] = (hottest or [None])[0]
+    out["coldest_day_ever"] = (coldest or [None])[0]
+    return out
+
+def build_wettest_months(limit=10):
+    rows = _q1("weather",
+        'SELECT %s AS year, %s AS month, ROUND(SUM("%s"),2) AS rain_in '
+        'FROM "%s" WHERE "%s" IS NOT NULL GROUP BY year, month '
+        'ORDER BY rain_in DESC LIMIT ?' % (YEAR_EXPR, MONTH_EXPR, RAIN_COL, RAIN_TABLE, RAIN_DATE),
+        (limit,))
+    return {"generated_utc": datetime.utcnow().isoformat() + "Z",
+            "wettest_months": rows}
+
+def build_driest_years(limit=10):
+    rows = _q1("weather",
+        'SELECT %s AS year, ROUND(SUM("%s"),2) AS rain_in '
+        'FROM "%s" WHERE "%s" IS NOT NULL GROUP BY year '
+        'ORDER BY rain_in ASC LIMIT ?' % (YEAR_EXPR, RAIN_COL, RAIN_TABLE, RAIN_DATE),
+        (limit,))
+    return {"generated_utc": datetime.utcnow().isoformat() + "Z",
+            "driest_years": rows}
+
+def build_day_in_history(md=None):
+    """How does a given calendar day (MM-DD) compare across all years? Defaults to today."""
+    if not md:
+        md = datetime.utcnow().strftime("%m-%d")
+    like = "%-" + md
+    temps = _q1("weather",
+        'SELECT ROUND(AVG(tmax_f),1) AS avg_high, ROUND(AVG(tmin_f),1) AS avg_low, '
+        'MAX(tmax_f) AS record_high, MIN(tmin_f) AS record_low, COUNT(*) AS days '
+        'FROM weather_daily WHERE date LIKE ?', (like,))
+    rain = _q1("weather",
+        'SELECT ROUND(AVG("%s"),2) AS avg_rain, MAX("%s") AS record_rain '
+        'FROM "%s" WHERE date LIKE ?' % (RAIN_COL, RAIN_COL, RAIN_TABLE), (like,))
+    today = _q1("weather",
+        'SELECT date, tmax_f, tmin_f, precip_in FROM weather_daily WHERE date LIKE ? '
+        'ORDER BY date DESC LIMIT 1', (like,))
+    out = {"generated_utc": datetime.utcnow().isoformat() + "Z",
+           "calendar_day": md,
+           "normals_and_records": (temps or [None])[0],
+           "rain_normals": (rain or [None])[0],
+           "most_recent_year_on_this_day": (today or [None])[0]}
+    return out
+
 # ---------- manifest / status ----------
 
 def build_manifest():
@@ -425,6 +498,10 @@ def build_manifest():
             "month_rankings_any": base + "/climate/month_rankings.json?month=6",
             "monthly_rain": base + "/climate/monthly_rain.json",
             "yearly_rain": base + "/climate/yearly_rain.json",
+            "records": base + "/climate/records.json",
+            "wettest_months": base + "/climate/wettest_months.json",
+            "driest_years": base + "/climate/driest_years.json",
+            "day_in_history": base + "/climate/day_in_history.json",
             "source_table": RAIN_TABLE,
             "note": ("Pre-aggregated rainfall from the 1893-present area "
                      "neighbor-median daily record. june_rankings ranks every "
@@ -519,6 +596,22 @@ def query():
                                  "FROM weather_daily ORDER BY date DESC LIMIT 5"
                                  % SECRET_PATH})
     return jresp(run_query(db, sql))
+
+@app.route("/" + SECRET_PATH + "/climate/records.json")
+def climate_records():
+    return jresp(build_records())
+
+@app.route("/" + SECRET_PATH + "/climate/wettest_months.json")
+def climate_wettest_months():
+    return jresp(build_wettest_months())
+
+@app.route("/" + SECRET_PATH + "/climate/driest_years.json")
+def climate_driest_years():
+    return jresp(build_driest_years())
+
+@app.route("/" + SECRET_PATH + "/climate/day_in_history.json")
+def climate_day_in_history():
+    return jresp(build_day_in_history(request.args.get("md")))
 
 @app.route("/" + SECRET_PATH + "/climate/june_rankings")
 @app.route("/" + SECRET_PATH + "/climate/june_rankings.json")
