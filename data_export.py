@@ -583,12 +583,22 @@ def build_status():
                     status["current"][name] = {"table": table, "latest": row}
                 break
         con.close()
-    al = build_alerts()
-    status["alerts"] = {
-        "active_count": al.get("active_count", 0),
-        "summary": [{"event": a.get("event"), "expires": a.get("expires"),
-                     "headline": a.get("headline")} for a in al.get("alerts", [])],
-    }
+    # Keep status.json FAST (no live network call). Surface any locally-logged
+    # warnings instantly; for live NWS alerts use the dedicated /alerts.json endpoint.
+    status["alerts_note"] = ("For live NWS alerts, open alerts.json. This summary is "
+                             "instant and network-free.")
+    try:
+        wpath = DATABASES.get("weather")
+        if wpath and os.path.exists(wpath):
+            c2 = ro_connect(wpath)
+            if c2.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                          "AND name='warning_log'").fetchone():
+                recent = c2.execute(
+                    "SELECT * FROM warning_log ORDER BY rowid DESC LIMIT 3").fetchall()
+                status["recent_logged_warnings"] = [dict(r) for r in recent]
+            c2.close()
+    except Exception:
+        pass
     return status
 
 def jresp(obj):
