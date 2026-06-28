@@ -5,6 +5,8 @@ from flask import Flask, abort, request, Response
 from datetime import datetime
 
 SECRET_PATH = "weatherdata-9f3k2"
+PUBLIC_HOST = "https://data.chipsweather.online"
+PUBLIC = PUBLIC_HOST + "/" + "weatherdata-9f3k2"
 PORT        = 5091
 ROW_CAP     = 5000
 MAX_LIMIT   = 200000
@@ -500,6 +502,18 @@ def build_manifest():
                      "Read status.json for current conditions without a big "
                      "download. Use the climate_history endpoints for ranked "
                      "rainfall comparisons." % (ROW_CAP, MAX_LIMIT)),
+        },
+                "open_these_exact_urls": {
+            "_note": ("Open these EXACTLY as written. They are already complete; do "
+                      "not append anything. Caching is disabled server-side, so no "
+                      "cache-buster is needed."),
+            "current_conditions_and_alerts": PUBLIC + "/status.json",
+            "live_alerts": PUBLIC + "/alerts.json",
+            "is_today_normal": PUBLIC + "/climate/day_in_history.json",
+            "all_time_records": PUBLIC + "/climate/records.json",
+            "june_vs_history": PUBLIC + "/climate/june_rankings.json",
+            "wettest_months": PUBLIC + "/climate/wettest_months.json",
+            "driest_years": PUBLIC + "/climate/driest_years.json",
         },
         "examples": {
             "manifest": base + "/manifest.json",
