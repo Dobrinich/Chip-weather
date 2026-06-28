@@ -484,6 +484,9 @@ def build_day_in_history(md=None):
 
 def build_manifest():
     base = "/" + SECRET_PATH
+    _t = int(datetime.utcnow().timestamp())   # freshness stamp, changes every second
+    fresh = "?t=" + str(_t)
+    pub = PUBLIC + fresh                       # not used directly; per-URL below
     man = {
         "name": "Litchfield Weather Data",
         "description": ("Read-only live export of weather, water tank, and soil "
@@ -504,16 +507,18 @@ def build_manifest():
                      "rainfall comparisons." % (ROW_CAP, MAX_LIMIT)),
         },
                 "open_these_exact_urls": {
-            "_note": ("Open these EXACTLY as written. They are already complete; do "
-                      "not append anything. Caching is disabled server-side, so no "
-                      "cache-buster is needed."),
-            "current_conditions_and_alerts": PUBLIC + "/status.json",
-            "live_alerts": PUBLIC + "/alerts.json",
-            "is_today_normal": PUBLIC + "/climate/day_in_history.json",
-            "all_time_records": PUBLIC + "/climate/records.json",
-            "june_vs_history": PUBLIC + "/climate/june_rankings.json",
-            "wettest_months": PUBLIC + "/climate/wettest_months.json",
-            "driest_years": PUBLIC + "/climate/driest_years.json",
+            "_note": ("Open these EXACTLY as written, verbatim, including the ?t= "
+                      "number on the end. Do NOT add, change, or remove anything. The "
+                      "?t= stamp is refreshed every time you load this manifest and "
+                      "guarantees you get live data, not a cached copy. To refresh, "
+                      "re-open the manifest to get new stamped URLs."),
+            "current_conditions_and_alerts": PUBLIC + "/status.json" + fresh,
+            "live_alerts": PUBLIC + "/alerts.json" + fresh,
+            "is_today_normal": PUBLIC + "/climate/day_in_history.json" + fresh,
+            "all_time_records": PUBLIC + "/climate/records.json" + fresh,
+            "june_vs_history": PUBLIC + "/climate/june_rankings.json" + fresh,
+            "wettest_months": PUBLIC + "/climate/wettest_months.json" + fresh,
+            "driest_years": PUBLIC + "/climate/driest_years.json" + fresh,
         },
         "examples": {
             "manifest": base + "/manifest.json",
