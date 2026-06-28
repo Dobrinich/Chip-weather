@@ -308,6 +308,81 @@ def build_alerts():
     out["active_count"] = len(out["alerts"])
     return out
 
+# ---------- safe read-only SQL query endpoint ----------
+# Accepts a single SELECT against one named database. Locked down so it can only
+# read: no writes, no multiple statements, no PRAGMA/ATTACH, hard row + time caps.
+
+import re as _re
+
+QUERY_ROW_CAP   = 5000     # max rows any single query may return
+QUERY_TIMEOUT_S = 8        # kill a query that runs longer than this
+_FORBIDDEN = (
+    "insert", "update", "delete", "drop", "alter", "create", "replace",
+    "attach", "detach", "pragma", "vacuum", "reindex", "trigger",
+    "commit", "rollback", "savepoint", "grant", "revoke", "load_extension",
+)
+
+def _query_is_safe(sql):
+    s = sql.strip().rstrip(";").strip()
+    if not s:
+        return False, "empty query"
+    low = s.lower()
+    # must start with SELECT or WITH (CTE that feeds a SELECT)
+    if not (low.startswith("select") or low.startswith("with")):
+        return False, "only SELECT queries are allowed"
+    # no stacked statements (one trailing ; already stripped; any remaining = multiple)
+    if ";" in s:
+        return False, "only a single statement is allowed"
+    # block dangerous keywords as whole words
+    for kw in _FORBIDDEN:
+        if _re.search(r"\b" + kw + r"\b", low):
+            return False, "keyword not allowed: " + kw
+    return True, s
+
+def run_query(db, sql):
+    if db not in DATABASES or not os.path.exists(DATABASES[db]):
+        return {"error": "unknown database '%s'" % db,
+                "available": list(DATABASES.keys())}
+    ok, result = _query_is_safe(sql)
+    if not ok:
+        return {"error": result}
+    safe_sql = result
+    try:
+        con = ro_connect(DATABASES[db])
+    except Exception as e:
+        return {"error": "could not open database: %s" % e}
+    # hard time limit so a heavy query can't hang the Pi
+    import time as _time
+    deadline = _time.time() + QUERY_TIMEOUT_S
+    def _guard():
+        if _time.time() > deadline:
+            return 1
+        return 0
+    try:
+        con.set_progress_handler(_guard, 100000)
+    except Exception:
+        pass
+    try:
+        cur = con.execute(safe_sql)
+        rows = cur.fetchmany(QUERY_ROW_CAP + 1)
+        cols = [d[0] for d in cur.description] if cur.description else []
+    except Exception as e:
+        con.close()
+        return {"error": "query failed: %s" % e, "database": db, "query": safe_sql}
+    con.close()
+    truncated = len(rows) > QUERY_ROW_CAP
+    rows = rows[:QUERY_ROW_CAP]
+    out = {
+        "database": db,
+        "query": safe_sql,
+        "columns": cols,
+        "row_count": len(rows),
+        "rows": [dict(zip(cols, r)) for r in rows],
+    }
+    if truncated:
+        out["note"] = "result truncated at %d rows; add LIMIT or aggregate" % QUERY_ROW_CAP
+    return out
+
 # ---------- manifest / status ----------
 
 def build_manifest():
@@ -336,6 +411,7 @@ def build_manifest():
             "current_summary": base + "/status.json",
             "all_data": base,
             "active_alerts": base + "/alerts.json",
+            "ask_a_query": base + "/query.json?db=weather&sql=SELECT date,tmax_f,tmin_f,precip_in FROM weather_daily ORDER BY date DESC LIMIT 7",
             "current_weather": base + "/weather/current_conditions",
             "daily_history": base + "/weather/weather_daily?limit=100000",
             "snow_history": base + "/weather/snow_daily?limit=100000",
@@ -429,6 +505,20 @@ def status():
 @app.route("/" + SECRET_PATH + "/alerts.json")
 def alerts():
     return jresp(build_alerts())
+
+@app.route("/" + SECRET_PATH + "/query")
+@app.route("/" + SECRET_PATH + "/query.json")
+def query():
+    db = request.args.get("db", "weather")
+    sql = request.args.get("sql", "")
+    if not sql:
+        return jresp({"error": "provide a SELECT query in the ?sql= parameter, "
+                              "and ?db= for the database",
+                      "databases": list(DATABASES.keys()),
+                      "example": "/%s/query.json?db=weather&sql=SELECT date,tmax_f "
+                                 "FROM weather_daily ORDER BY date DESC LIMIT 5"
+                                 % SECRET_PATH})
+    return jresp(run_query(db, sql))
 
 @app.route("/" + SECRET_PATH + "/climate/june_rankings")
 @app.route("/" + SECRET_PATH + "/climate/june_rankings.json")
