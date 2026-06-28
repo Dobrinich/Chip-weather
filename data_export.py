@@ -14,6 +14,14 @@ DATABASES = {
     "water_tank": "/home/waterproject/water_tank.db",
     "soil":       "/home/waterproject/soil.db",
 }
+# Auto-publish any other database in the home folder so everything on the Pi is
+# readable without editing this list. (weather_data.db lives in a subfolder and
+# is added explicitly above; water_tank/soil are already keyed, so no dupes.)
+import glob as _glob
+for _p in sorted(_glob.glob("/home/waterproject/*.db")):
+    _stem = os.path.splitext(os.path.basename(_p))[0]
+    if _stem not in DATABASES and _p not in DATABASES.values():
+        DATABASES[_stem] = _p
 
 STATUS_SOURCES = {
     "weather":    ["current_conditions", "weather_data"],
@@ -35,6 +43,10 @@ MONTH_NAMES = ["", "January", "February", "March", "April", "May", "June",
                "July", "August", "September", "October", "November", "December"]
 
 TIME_HINTS = ("ts", "time", "date", "day", "utc", "stamp", "yr", "year")
+
+# live NWS alerts for the Litchfield area (forecast zone + county zone)
+NWS_ZONES = ["ILZ064", "ILC135"]
+NWS_UA = "ChipsWeather/1.0 (chipsweather.online)"
 
 app = Flask(__name__)
 
@@ -252,6 +264,50 @@ def build_yearly_rain():
     return [{"year": r["yr"], "rain_in": r["rain_in"]}
             for r in rows if r["yr"] is not None]
 
+def build_alerts():
+    out = {"generated_utc": datetime.utcnow().isoformat() + "Z",
+           "zones": NWS_ZONES, "active_count": 0, "alerts": []}
+    try:
+        import requests
+    except Exception:
+        out["error"] = "requests not available"
+        return out
+    seen = set()
+    for z in NWS_ZONES:
+        try:
+            r = requests.get("https://api.weather.gov/alerts/active",
+                             params={"zone": z},
+                             headers={"User-Agent": NWS_UA,
+                                      "Accept": "application/geo+json"},
+                             timeout=6)
+            if r.status_code != 200:
+                continue
+            feats = r.json().get("features", [])
+        except Exception:
+            continue
+        for f in feats:
+            p = f.get("properties", {}) or {}
+            aid = p.get("id") or f.get("id")
+            if aid and aid in seen:
+                continue
+            if aid:
+                seen.add(aid)
+            out["alerts"].append({
+                "event": p.get("event"),
+                "severity": p.get("severity"),
+                "urgency": p.get("urgency"),
+                "certainty": p.get("certainty"),
+                "headline": p.get("headline"),
+                "area": p.get("areaDesc"),
+                "onset": p.get("onset"),
+                "expires": p.get("expires"),
+                "ends": p.get("ends"),
+                "description": p.get("description"),
+                "instruction": p.get("instruction"),
+            })
+    out["active_count"] = len(out["alerts"])
+    return out
+
 # ---------- manifest / status ----------
 
 def build_manifest():
@@ -279,6 +335,7 @@ def build_manifest():
             "manifest": base + "/manifest.json",
             "current_summary": base + "/status.json",
             "all_data": base,
+            "active_alerts": base + "/alerts.json",
             "current_weather": base + "/weather/current_conditions",
             "daily_history": base + "/weather/weather_daily?limit=100000",
             "snow_history": base + "/weather/snow_daily?limit=100000",
@@ -337,6 +394,12 @@ def build_status():
                     status["current"][name] = {"table": table, "latest": row}
                 break
         con.close()
+    al = build_alerts()
+    status["alerts"] = {
+        "active_count": al.get("active_count", 0),
+        "summary": [{"event": a.get("event"), "expires": a.get("expires"),
+                     "headline": a.get("headline")} for a in al.get("alerts", [])],
+    }
     return status
 
 def jresp(obj):
@@ -361,6 +424,11 @@ def manifest():
 @app.route("/" + SECRET_PATH + "/status.json")
 def status():
     return jresp(build_status())
+
+@app.route("/" + SECRET_PATH + "/alerts")
+@app.route("/" + SECRET_PATH + "/alerts.json")
+def alerts():
+    return jresp(build_alerts())
 
 @app.route("/" + SECRET_PATH + "/climate/june_rankings")
 @app.route("/" + SECRET_PATH + "/climate/june_rankings.json")
